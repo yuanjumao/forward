@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ai-proxy/internal/config"
+	"ai-proxy/internal/pool"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -30,14 +31,16 @@ func statusKey(backendName, model string) string {
 // Checker 健康检查器
 type Checker struct {
 	cfg      *config.Config
+	pool     *pool.ClientPool
 	mu       sync.RWMutex
 	statuses map[string]*BackendStatus // key: "backendName::model"
 	stopCh   chan struct{}
 }
 
-func New(cfg *config.Config) *Checker {
+func New(cfg *config.Config, p *pool.ClientPool) *Checker {
 	c := &Checker{
 		cfg:      cfg,
+		pool:     p,
 		statuses: make(map[string]*BackendStatus),
 		stopCh:   make(chan struct{}),
 	}
@@ -79,9 +82,7 @@ func (c *Checker) checkOne(backend config.BackendConfig, model string) {
 	msg := c.cfg.HealthCheck.Message
 	expected := c.cfg.HealthCheck.Expected
 
-	clientCfg := openai.DefaultConfig(backend.APIKey)
-	clientCfg.BaseURL = backend.BaseURL
-	client := openai.NewClientWithConfig(clientCfg)
+	client := c.pool.Get(backend.Name)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.cfg.HealthCheck.Timeout)*time.Second)
 	defer cancel()

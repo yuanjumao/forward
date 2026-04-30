@@ -14,6 +14,7 @@ import (
 
 	"ai-proxy/internal/config"
 	"ai-proxy/internal/healthcheck"
+	"ai-proxy/internal/pool"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -21,6 +22,7 @@ import (
 type Handler struct {
 	cfg     *config.Config
 	checker *healthcheck.Checker
+	pool    *pool.ClientPool
 	counter uint64 // 用于 balance 模式的 round-robin 计数器
 }
 
@@ -58,18 +60,17 @@ type statusResponse struct {
 	Backends []healthcheck.BackendStatus `json:"backends"`
 }
 
-func NewHandler(cfg *config.Config, checker *healthcheck.Checker) *Handler {
+func NewHandler(cfg *config.Config, checker *healthcheck.Checker, p *pool.ClientPool) *Handler {
 	return &Handler{
 		cfg:     cfg,
 		checker: checker,
+		pool:    p,
 	}
 }
 
-// newClient 为指定后端创建 openai client
-func newClient(backend *config.BackendConfig) *openai.Client {
-	clientCfg := openai.DefaultConfig(backend.APIKey)
-	clientCfg.BaseURL = backend.BaseURL
-	return openai.NewClientWithConfig(clientCfg)
+// getClient 从连接池获取指定后端的 client（复用底层 TCP 连接）
+func (h *Handler) getClient(backendName string) *openai.Client {
+	return h.pool.Get(backendName)
 }
 
 // reorder 根据策略对候选列表排序
@@ -156,7 +157,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, req openai.ChatCompleti
 
 	for i, c := range candidates {
 		req.Model = c.Model
-		client := newClient(&c.Backend)
+		client := h.getClient(c.Backend.Name)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 		log.Printf("[代理] [%s] 尝试后端 %s/%s (%d/%d)", h.cfg.Strategy, c.Backend.Name, c.Model, i+1, len(candidates))
@@ -187,7 +188,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req opena
 
 	for i, c := range candidates {
 		req.Model = c.Model
-		client := newClient(&c.Backend)
+		client := h.getClient(c.Backend.Name)
 		ctx, cancel := context.WithCancel(r.Context())
 
 		log.Printf("[代理] [流式] [%s] 尝试后端 %s/%s (%d/%d)", h.cfg.Strategy, c.Backend.Name, c.Model, i+1, len(candidates))

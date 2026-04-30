@@ -10,6 +10,7 @@ import (
 
 	"ai-proxy/internal/config"
 	"ai-proxy/internal/healthcheck"
+	"ai-proxy/internal/pool"
 	"ai-proxy/internal/proxy"
 )
 
@@ -28,8 +29,12 @@ func main() {
 
 	log.Printf("[启动] 加载了 %d 个后端模型配置", len(cfg.Backends))
 
+	// 创建连接池（为每个后端预创建 client，复用底层 TCP 连接）
+	clientPool := pool.New(cfg)
+	log.Println("[启动] 后端连接池已创建")
+
 	// 创建健康检查器
-	checker := healthcheck.New(cfg)
+	checker := healthcheck.New(cfg, clientPool)
 
 	// 启动前先做一次全量健康检查
 	log.Println("[启动] 正在执行初始健康检查...")
@@ -46,7 +51,7 @@ func main() {
 	defer checker.Stop()
 
 	// 创建代理处理器
-	handler := proxy.NewHandler(cfg, checker)
+	handler := proxy.NewHandler(cfg, checker, clientPool)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions)
