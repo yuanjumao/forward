@@ -52,6 +52,7 @@ type modelInfo struct {
 type statusResponse struct {
 	Status   string                      `json:"status"`
 	Strategy string                      `json:"strategy"`
+	Fallback string                      `json:"fallback"`
 	Healthy  int                         `json:"healthy_count"`
 	Total    int                         `json:"total_count"`
 	Backends []healthcheck.BackendStatus `json:"backends"`
@@ -116,8 +117,19 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" {
 		candidates = h.checker.BackendsForModel(req.Model)
 		if len(candidates) == 0 {
-			h.handleNoBackend(w, req.Model)
-			return
+			// 指定的模型不可用，根据 fallback 策略决定行为
+			if h.cfg.Fallback == "failed" {
+				h.handleNoBackend(w, req.Model)
+				return
+			}
+			// failover: 自动切换到其他可用模型
+			candidates = h.checker.AllHealthyBackendModels()
+			if len(candidates) == 0 {
+				writeError(w, http.StatusServiceUnavailable, "no_model_available",
+					fmt.Sprintf("模型 %q 不可用，且没有任何其他可用的后端模型", req.Model))
+				return
+			}
+			log.Printf("[代理] [failover] 模型 %q 不可用，自动切换到其他可用模型", req.Model)
 		}
 	} else {
 		candidates = h.checker.AllHealthyBackendModels()
@@ -328,6 +340,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{
 		Status:   overall,
 		Strategy: h.cfg.Strategy,
+		Fallback: h.cfg.Fallback,
 		Healthy:  healthyCount,
 		Total:    len(statuses),
 		Backends: statuses,

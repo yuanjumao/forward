@@ -4,6 +4,9 @@ server:
 # 调度策略: order（默认，优先用第一个可用后端） 或 balance（轮询均分）
 strategy: "order"
 
+# 故障转移: failover（默认，指定模型不可用时自动切换到其他可用模型） 或 failed（直接返回错误）
+fallback: "failover"
+
 health_check:
   interval: 60        # 健康检查间隔（秒）
   timeout: 30         # 单次检查超时（秒）

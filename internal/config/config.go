@@ -11,6 +11,7 @@ type Config struct {
 	Server      ServerConfig      `yaml:"server"`
 	HealthCheck HealthCheckConfig `yaml:"health_check"`
 	Strategy    string            `yaml:"strategy"` // "order"（默认）或 "balance"
+	Fallback    string            `yaml:"fallback"` // "failover"（默认，自动切换到可用模型）或 "failed"（直接报错）
 	Backends    []BackendConfig   `yaml:"backends"`
 }
 
@@ -80,6 +81,16 @@ func Load(path string) (*Config, error) {
 		// ok
 	default:
 		return nil, fmt.Errorf("不支持的 strategy %q，可选值: order, balance", cfg.Strategy)
+	}
+
+	// fallback 默认值与校验
+	switch cfg.Fallback {
+	case "":
+		cfg.Fallback = "failover"
+	case "failover", "failed":
+		// ok
+	default:
+		return nil, fmt.Errorf("不支持的 fallback %q，可选值: failover, failed", cfg.Fallback)
 	}
 
 	// 校验后端配置
