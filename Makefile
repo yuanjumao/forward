@@ -21,7 +21,7 @@ docker:
 	docker build -t $(IMAGE):$(TAG) .
 
 # Docker 运行（挂载配置文件）
-docker-run: docker
-	docker run --rm -p 8080:8080 \
-		-v $(PWD)/config.yaml:/etc/ai-proxy/config.yaml:ro \
+docker-run: 
+	docker run --rm -p 8081:8081 \
+		-v $(PWD)/current.yaml:/etc/ai-proxy/config.yaml:ro \
 		$(IMAGE):$(TAG)

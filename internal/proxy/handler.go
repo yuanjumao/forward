@@ -116,7 +116,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var candidates []healthcheck.BackendWithModel
 
 	if req.Model != "" {
-		candidates = h.checker.BackendsForModel(req.Model)
+		candidates = h.checker.BackendsForModel(req.Model, "chat")
 		if len(candidates) == 0 {
 			// 指定的模型不可用，根据 fallback 策略决定行为
 			if h.cfg.Fallback == "failed" {
@@ -124,7 +124,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// failover: 自动切换到其他可用模型
-			candidates = h.checker.AllHealthyBackendModels()
+			candidates = h.checker.AllHealthyBackendModels("chat")
 			if len(candidates) == 0 {
 				writeError(w, http.StatusServiceUnavailable, "no_model_available",
 					fmt.Sprintf("模型 %q 不可用，且没有任何其他可用的后端模型", req.Model))
@@ -133,7 +133,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[代理] [failover] 模型 %q 不可用，自动切换到其他可用模型", req.Model)
 		}
 	} else {
-		candidates = h.checker.AllHealthyBackendModels()
+		candidates = h.checker.AllHealthyBackendModels("chat")
 		if len(candidates) == 0 {
 			writeError(w, http.StatusServiceUnavailable, "no_model_available",
 				"当前没有任何可用的后端模型")
@@ -258,6 +258,89 @@ func (h *Handler) streamResponse(w http.ResponseWriter, stream *openai.ChatCompl
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
 	}
+}
+
+// Embeddings 处理 /v1/embeddings 请求，支持自动 fallback
+func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "仅支持 POST 方法")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "读取请求体失败")
+		return
+	}
+	defer r.Body.Close()
+
+	var req openai.EmbeddingRequestStrings
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "解析请求体失败: "+err.Error())
+		return
+	}
+
+	// 获取候选后端列表
+	var candidates []healthcheck.BackendWithModel
+	reqModel := string(req.Model)
+
+	if reqModel != "" {
+		candidates = h.checker.BackendsForModel(reqModel, "embedding")
+		if len(candidates) == 0 {
+			if h.cfg.Fallback == "failed" {
+				h.handleNoBackend(w, reqModel)
+				return
+			}
+			candidates = h.checker.AllHealthyBackendModels("embedding")
+			if len(candidates) == 0 {
+				writeError(w, http.StatusServiceUnavailable, "no_model_available",
+					fmt.Sprintf("Embedding 模型 %q 不可用，且没有任何其他可用的 embedding 后端", reqModel))
+				return
+			}
+			log.Printf("[代理] [embedding] [failover] 模型 %q 不可用，自动切换", reqModel)
+		}
+	} else {
+		candidates = h.checker.AllHealthyBackendModels("embedding")
+		if len(candidates) == 0 {
+			writeError(w, http.StatusServiceUnavailable, "no_model_available",
+				"当前没有任何可用的 embedding 后端模型")
+			return
+		}
+	}
+
+	candidates = h.reorder(candidates)
+	h.handleEmbedding(w, req, candidates)
+}
+
+// handleEmbedding 逐个尝试候选后端，失败自动切换
+func (h *Handler) handleEmbedding(w http.ResponseWriter, req openai.EmbeddingRequestStrings, candidates []healthcheck.BackendWithModel) {
+	var lastErr error
+
+	for i, c := range candidates {
+		req.Model = openai.EmbeddingModel(c.Model)
+		client := h.getClient(c.Backend.Name)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+
+		log.Printf("[代理] [embedding] [%s] 尝试后端 %s/%s (%d/%d)", h.cfg.Strategy, c.Backend.Name, c.Model, i+1, len(candidates))
+
+		resp, err := client.CreateEmbeddings(ctx, req)
+		cancel()
+
+		if err != nil {
+			lastErr = err
+			log.Printf("[代理] [embedding] 后端 %s/%s 失败: %v", c.Backend.Name, c.Model, err)
+			h.checker.MarkUnhealthy(c.Backend.Name, c.Model, fmt.Sprintf("embedding 转发失败: %v", err))
+			continue
+		}
+
+		log.Printf("[代理] [embedding] ✓ 后端 %s/%s 成功响应", c.Backend.Name, c.Model)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	log.Printf("[代理] [embedding] ✗ 所有候选后端均失败")
+	writeError(w, http.StatusBadGateway, "all_backends_failed",
+		fmt.Sprintf("所有 embedding 候选后端均请求失败，最后错误: %v", lastErr))
 }
 
 // handleNoBackend 处理指定模型没有可用后端的情况

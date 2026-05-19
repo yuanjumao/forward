@@ -55,6 +55,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions)
+	mux.HandleFunc("/v1/embeddings", handler.Embeddings)
 	mux.HandleFunc("/v1/models", handler.ListModels)
 	mux.HandleFunc("/status", handler.Status)
 	mux.HandleFunc("/health", handler.Health)

@@ -16,6 +16,7 @@ import (
 // BackendStatus 记录单个后端某个模型的状态
 type BackendStatus struct {
 	BackendName string    `json:"backend_name"`
+	Type        string    `json:"type"`
 	Model       string    `json:"model"`
 	BaseURL     string    `json:"base_url"`
 	Healthy     bool      `json:"healthy"`
@@ -49,8 +50,13 @@ func New(cfg *config.Config, p *pool.ClientPool) *Checker {
 	for _, b := range cfg.Backends {
 		for _, model := range b.EffectiveModels() {
 			key := statusKey(b.Name, model)
+			backendType := b.Type
+			if backendType == "" {
+				backendType = "chat"
+			}
 			c.statuses[key] = &BackendStatus{
 				BackendName: b.Name,
+				Type:        backendType,
 				Model:       model,
 				BaseURL:     b.BaseURL,
 				Healthy:     false,
@@ -76,8 +82,17 @@ func (c *Checker) CheckAll() {
 	wg.Wait()
 }
 
-// checkOne 使用 go-openai 库对单个后端的单个模型执行健康检查
+// checkOne 对单个后端的单个模型执行健康检查，根据类型选择不同的检查方式
 func (c *Checker) checkOne(backend config.BackendConfig, model string) {
+	if backend.IsEmbedding() {
+		c.checkEmbedding(backend, model)
+	} else {
+		c.checkChat(backend, model)
+	}
+}
+
+// checkChat 使用 chat completion 接口检查
+func (c *Checker) checkChat(backend config.BackendConfig, model string) {
 	key := statusKey(backend.Name, model)
 	msg := c.cfg.HealthCheck.Message
 	expected := c.cfg.HealthCheck.Expected
@@ -109,9 +124,36 @@ func (c *Checker) checkOne(backend config.BackendConfig, model string) {
 		return
 	}
 
-	// 只要能正常返回就视为健康
 	c.setStatus(key, true, "")
 	log.Printf("[健康检查] ✓ %s/%s 正常", backend.Name, model)
+}
+
+// checkEmbedding 使用 embedding 接口检查
+func (c *Checker) checkEmbedding(backend config.BackendConfig, model string) {
+	key := statusKey(backend.Name, model)
+
+	client := c.pool.Get(backend.Name)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.cfg.HealthCheck.Timeout)*time.Second)
+	defer cancel()
+
+	resp, err := client.CreateEmbeddings(ctx, openai.EmbeddingRequestStrings{
+		Input: []string{"hello"},
+		Model: openai.EmbeddingModel(model),
+	})
+
+	if err != nil {
+		c.setStatus(key, false, fmt.Sprintf("请求失败: %v", err))
+		return
+	}
+
+	if len(resp.Data) == 0 {
+		c.setStatus(key, false, "响应中没有 embedding 数据")
+		return
+	}
+
+	c.setStatus(key, true, "")
+	log.Printf("[健康检查] ✓ %s/%s [embedding] 正常", backend.Name, model)
 }
 
 func (c *Checker) setStatus(key string, healthy bool, lastErr string) {
@@ -186,12 +228,16 @@ func (c *Checker) HealthyBackends() []config.BackendConfig {
 }
 
 // BackendsForModel 返回支持指定模型的所有健康后端（按配置顺序，用于 fallback）
-func (c *Checker) BackendsForModel(model string) []BackendWithModel {
+// backendType: "chat" 或 "embedding"，空字符串匹配所有
+func (c *Checker) BackendsForModel(model string, backendType string) []BackendWithModel {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var result []BackendWithModel
 	for _, b := range c.cfg.Backends {
+		if !matchType(b, backendType) {
+			continue
+		}
 		for _, m := range b.EffectiveModels() {
 			if m == model {
 				key := statusKey(b.Name, model)
@@ -245,12 +291,16 @@ type BackendWithModel struct {
 }
 
 // AllHealthyBackendModels 返回所有健康的后端+模型组合（按配置顺序）
-func (c *Checker) AllHealthyBackendModels() []BackendWithModel {
+// backendType: "chat" 或 "embedding"，空字符串匹配所有
+func (c *Checker) AllHealthyBackendModels(backendType string) []BackendWithModel {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var result []BackendWithModel
 	for _, b := range c.cfg.Backends {
+		if !matchType(b, backendType) {
+			continue
+		}
 		for _, model := range b.EffectiveModels() {
 			key := statusKey(b.Name, model)
 			if s, ok := c.statuses[key]; ok && s.Healthy {
@@ -259,6 +309,17 @@ func (c *Checker) AllHealthyBackendModels() []BackendWithModel {
 		}
 	}
 	return result
+}
+
+// matchType 检查后端是否匹配指定类型
+func matchType(b config.BackendConfig, backendType string) bool {
+	if backendType == "" {
+		return true
+	}
+	if b.Type == "" {
+		return backendType == "chat"
+	}
+	return b.Type == backendType
 }
 
 // HasAnyHealthy 是否有任何健康的后端

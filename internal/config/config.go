@@ -28,10 +28,21 @@ type HealthCheckConfig struct {
 
 type BackendConfig struct {
 	Name    string   `yaml:"name"`
+	Type    string   `yaml:"type"` // "chat"（默认）或 "embedding"
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // 该后端支持的模型列表
 	Model   string   `yaml:"model"`  // 兼容单模型配置
+}
+
+// IsChat 是否为 chat 类型后端
+func (b *BackendConfig) IsChat() bool {
+	return b.Type == "" || b.Type == "chat"
+}
+
+// IsEmbedding 是否为 embedding 类型后端
+func (b *BackendConfig) IsEmbedding() bool {
+	return b.Type == "embedding"
 }
 
 // EffectiveModels 返回该后端实际支持的模型列表
@@ -104,6 +115,13 @@ func Load(path string) (*Config, error) {
 		models := b.EffectiveModels()
 		if len(models) == 0 {
 			return nil, fmt.Errorf("后端 %q 缺少 model 或 models 配置", b.Name)
+		}
+		// type 默认值
+		switch b.Type {
+		case "", "chat", "embedding":
+			// ok
+		default:
+			return nil, fmt.Errorf("后端 %q 的 type %q 不支持，可选值: chat, embedding", b.Name, b.Type)
 		}
 	}
 

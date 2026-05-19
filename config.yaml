@@ -39,3 +39,12 @@ backends:
     models:
       - "llama3"
       - "qwen2"
+
+  # Embedding 模型后端
+  - name: "openai-embedding"
+    type: "embedding"
+    base_url: "https://api.openai.com/v1"
+    api_key: "sk-xxxx"
+    models:
+      - "text-embedding-3-small"
+      - "text-embedding-3-large"
