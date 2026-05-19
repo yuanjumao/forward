@@ -274,15 +274,50 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var req openai.EmbeddingRequestStrings
-	if err := json.Unmarshal(body, &req); err != nil {
+	// 自定义解析，兼容 input 为 string 或 []string
+	var raw struct {
+		Input          json.RawMessage                `json:"input"`
+		Model          string                         `json:"model"`
+		EncodingFormat openai.EmbeddingEncodingFormat `json:"encoding_format,omitempty"`
+		User           string                         `json:"user,omitempty"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "解析请求体失败: "+err.Error())
 		return
 	}
 
+	// 解析 input：支持 string、[]string
+	var inputStrings []string
+	if len(raw.Input) > 0 {
+		// 尝试解析为 string
+		var single string
+		if json.Unmarshal(raw.Input, &single) == nil {
+			inputStrings = []string{single}
+		} else {
+			// 尝试解析为 []string
+			if err := json.Unmarshal(raw.Input, &inputStrings); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request",
+					"input 字段必须是 string 或 string 数组")
+				return
+			}
+		}
+	}
+
+	if len(inputStrings) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "input 不能为空")
+		return
+	}
+
+	req := openai.EmbeddingRequestStrings{
+		Input:          inputStrings,
+		Model:          openai.EmbeddingModel(raw.Model),
+		EncodingFormat: raw.EncodingFormat,
+		User:           raw.User,
+	}
+
 	// 获取候选后端列表
 	var candidates []healthcheck.BackendWithModel
-	reqModel := string(req.Model)
+	reqModel := raw.Model
 
 	if reqModel != "" {
 		candidates = h.checker.BackendsForModel(reqModel, "embedding")
